@@ -82,6 +82,37 @@ describe('list query parameters', () => {
   });
 });
 
+describe('project management routes', () => {
+  const send = (method: string, path: string, role: 'PM' | 'INTERNAL' | 'CLIENT', body?: unknown) =>
+    call(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...bearer(role) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  test.each([
+    ['editing a project', 'PATCH', '/api/projects/p1', { name: 'x' }],
+    ['adding a member', 'POST', '/api/projects/p1/members', { userId: 'u1' }],
+    ['removing a member', 'DELETE', '/api/projects/p1/members/u1', undefined],
+  ])('%s is for a PM only', async (_label, method, path, body) => {
+    for (const role of ['INTERNAL', 'CLIENT'] as const) {
+      const res = await send(method, path, role, body);
+      expect(res.status).toBe(403);
+      await errorOf(res);
+    }
+  });
+
+  test.each([
+    ['a project edit with nothing to change', 'PATCH', '/api/projects/p1', {}],
+    ['a project edit with an empty name', 'PATCH', '/api/projects/p1', { name: '' }],
+    ['a new member without a user id', 'POST', '/api/projects/p1/members', {}],
+  ])('%s is a 422', async (_label, method, path, body) => {
+    const res = await send(method, path, 'PM', body);
+    expect(res.status).toBe(422);
+    await errorOf(res);
+  });
+});
+
 describe('registration', () => {
   test('a PM cannot be self-registered', async () => {
     const res = await post(

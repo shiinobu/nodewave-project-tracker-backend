@@ -80,13 +80,15 @@ model Project {
 
 // Governs which Internal Team members and which Client Guest(s) can see a project.
 // PMs are not listed here: they have global read/write access per the brief.
+// Removing a member sets deletedAt; adding them again clears it, so the row is reused.
 model ProjectMember {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   projectId String
-  project   Project  @relation(fields: [projectId], references: [id])
+  project   Project   @relation(fields: [projectId], references: [id])
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  createdAt DateTime @default(now())
+  user      User      @relation(fields: [userId], references: [id])
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
 
   @@unique([projectId, userId])
   @@map("project_members")

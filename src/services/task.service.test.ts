@@ -8,6 +8,7 @@ import {
   computeBlocked,
   createTask,
   getTask,
+  listAuditLogs,
   listTasks,
   updateTask,
   updateTaskStatus,
@@ -373,6 +374,108 @@ describe('task.service integration (real database)', () => {
           }),
         }),
       ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    test('everyone with access can search the description, which a Client Guest already sees', async () => {
+      const described = await prisma.task.create({
+        data: {
+          projectId,
+          title: `${RUN}-described`,
+          description: `${RUN} zebra-crossing notes`,
+          department: 'FRONTEND',
+          isClientVisible: true,
+        },
+      });
+      const query = {
+        filters: JSON.stringify({ projectId }),
+        searchFilters: JSON.stringify({ description: 'zebra-crossing' }),
+      };
+
+      for (const user of [pmUser, backendUser, clientUser]) {
+        const result = await listTasks(user, query);
+        expect(result.entries.map((task) => task.id)).toEqual([described.id]);
+      }
+    });
+
+    test('an Internal Team member can filter by assignee, a Client Guest cannot', async () => {
+      const mine = await listTasks(backendUser, {
+        filters: JSON.stringify({ projectId, assigneeId: backendEngineer.id }),
+      });
+      const ids = mine.entries.map((task) => task.id);
+      expect(ids).toContain(taskA.id);
+      expect(ids).toContain(taskB.id);
+      expect(ids).not.toContain(taskC.id);
+
+      await expect(
+        listTasks(clientUser, { filters: JSON.stringify({ assigneeId: backendEngineer.id }) }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+  });
+
+  describe('audit history is a list that follows the query contract', () => {
+    let audited: { id: string };
+
+    beforeAll(async () => {
+      const created = await createTask(pmUser, {
+        projectId,
+        title: `${RUN}-audited`,
+        department: 'BACKEND',
+      });
+      audited = created;
+      // One CREATE row, then two UPDATE rows (title and description) written together.
+      await updateTask(pmUser, created.id, {
+        title: `${RUN}-audited-again`,
+        description: 'now described',
+        version: created.version,
+      });
+    });
+
+    test('answers with entries, totalData and totalPage, newest first', async () => {
+      const result = await listAuditLogs(pmUser, audited.id, {});
+
+      expect(result.totalData).toBe(3);
+      expect(result.totalPage).toBe(1);
+      const times = result.entries.map((entry) => entry.createdAt.getTime());
+      expect(times).toEqual([...times].sort((a, b) => b - a));
+      expect(result.entries[0]?.user.name).toBe('Test PM');
+    });
+
+    test('pages with page and rows', async () => {
+      const second = await listAuditLogs(pmUser, audited.id, { rows: '2', page: '2' });
+      expect(second.entries).toHaveLength(1);
+      expect(second.totalData).toBe(3);
+      expect(second.totalPage).toBe(2);
+    });
+
+    test('filters by action and searches the changed column', async () => {
+      const updates = await listAuditLogs(pmUser, audited.id, {
+        filters: JSON.stringify({ action: 'UPDATE' }),
+      });
+      expect(updates.totalData).toBe(2);
+      expect(updates.entries.every((entry) => entry.action === 'UPDATE')).toBe(true);
+
+      const described = await listAuditLogs(pmUser, audited.id, {
+        searchFilters: JSON.stringify({ changedColumn: 'descr' }),
+      });
+      expect(described.entries.map((entry) => entry.changedColumn)).toEqual(['description']);
+    });
+
+    test('cannot be pointed at another task or at a hidden column', async () => {
+      await expect(
+        listAuditLogs(pmUser, audited.id, { filters: JSON.stringify({ taskId: taskA.id }) }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        listAuditLogs(pmUser, audited.id, {
+          filters: JSON.stringify({ 'user.password': { startsWith: '$2b$' } }),
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    test('is open to Internal Team members of the project and closed to a Client Guest', async () => {
+      expect((await listAuditLogs(backendUser, audited.id, {})).totalData).toBe(3);
+      await expect(listAuditLogs(clientUser, audited.id, {})).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
     });
   });
 });

@@ -15,11 +15,29 @@ import { recordAudit } from './audit.service';
 import { assertAssignable, assertTransition } from './task-policy';
 
 const internalTaskListSpec: ListQuerySpec = {
-  allowedFields: ['title', 'status', 'department', 'projectId', 'isClientVisible', 'createdAt'],
-  searchableFields: ['title'],
+  allowedFields: [
+    'title',
+    'status',
+    'department',
+    'assigneeId',
+    'projectId',
+    'isClientVisible',
+    'createdAt',
+  ],
+  searchableFields: ['title', 'description'],
   maxPageSize: 100,
   defaultPageSize: 10,
 };
+
+const auditLogListSpec: ListQuerySpec = {
+  allowedFields: ['action', 'userId', 'changedColumn', 'createdAt'],
+  searchableFields: ['changedColumn'],
+  maxPageSize: 100,
+  defaultPageSize: 10,
+};
+
+// A removed member keeps their row with deletedAt set, and only active memberships grant access.
+const activeMemberIds = { where: { deletedAt: null }, select: { userId: true } } as const;
 
 // Department is an internal identity and every visible task is client-visible already, so a
 // Client Guest cannot filter, search or sort on them — that would leak what the response masks.
@@ -29,7 +47,7 @@ const clientTaskListSpec: ListQuerySpec = {
 };
 
 const taskInclude = {
-  project: { select: { id: true, name: true, members: { select: { userId: true } } } },
+  project: { select: { id: true, name: true, members: activeMemberIds } },
   assignee: { select: { id: true, name: true, avatarUrl: true, department: true } },
   dependsOn: {
     include: {
@@ -114,14 +132,11 @@ export async function listTasks(
   rawQuery: Record<string, string | string[] | undefined>,
 ) {
   let mandatoryWhere: Record<string, unknown> = { deletedAt: null };
+  const isActiveMember = { members: { some: { userId: user.sub, deletedAt: null } } };
   if (user.role === 'INTERNAL') {
-    mandatoryWhere = { ...mandatoryWhere, project: { members: { some: { userId: user.sub } } } };
+    mandatoryWhere = { ...mandatoryWhere, project: isActiveMember };
   } else if (user.role === 'CLIENT') {
-    mandatoryWhere = {
-      ...mandatoryWhere,
-      isClientVisible: true,
-      project: { members: { some: { userId: user.sub } } },
-    };
+    mandatoryWhere = { ...mandatoryWhere, isClientVisible: true, project: isActiveMember };
   }
 
   const listQuery = buildListQuery(
@@ -215,7 +230,10 @@ async function assertAssigneeAllowed(
     select: {
       role: true,
       department: true,
-      projectMemberships: { where: { projectId: task.projectId }, select: { id: true } },
+      projectMemberships: {
+        where: { projectId: task.projectId, deletedAt: null },
+        select: { id: true },
+      },
     },
   });
 
@@ -295,7 +313,7 @@ export async function updateTaskStatus(
   const task = await prisma.task.findFirst({
     where: { id: taskId, deletedAt: null },
     include: {
-      project: { select: { members: { select: { userId: true } } } },
+      project: { select: { members: activeMemberIds } },
       dependsOn: {
         include: { dependsOnTask: { select: { id: true, title: true, status: true } } },
       },
@@ -329,11 +347,18 @@ export async function updateTaskStatus(
   });
 }
 
-/** PM and Internal Team members of the project can review a task's immutable history. */
-export async function listAuditLogs(user: JwtPayload, taskId: string) {
+/**
+ * PM and Internal Team members of the project can review a task's history. It is a list like
+ * any other, so it follows the query contract, newest first unless an order is asked for.
+ */
+export async function listAuditLogs(
+  user: JwtPayload,
+  taskId: string,
+  rawQuery: Record<string, string | string[] | undefined>,
+) {
   const task = await prisma.task.findFirst({
     where: { id: taskId, deletedAt: null },
-    include: { project: { select: { members: { select: { userId: true } } } } },
+    include: { project: { select: { members: activeMemberIds } } },
   });
   if (!task) throw new NotFoundError('Task not found');
   if (user.role === 'CLIENT') {
@@ -344,11 +369,19 @@ export async function listAuditLogs(user: JwtPayload, taskId: string) {
     throw new ForbiddenError('You do not have access to this project');
   }
 
-  return prisma.auditLog.findMany({
-    where: { taskId },
-    orderBy: { createdAt: 'desc' },
-    include: { user: { select: { id: true, name: true, role: true } } },
-  });
+  const listQuery = buildListQuery(rawQuery, auditLogListSpec, { taskId });
+  const [rows, totalData] = await Promise.all([
+    prisma.auditLog.findMany({
+      ...listQuery,
+      // ezfilter answers with an empty object when no order was asked for.
+      orderBy:
+        Object.keys(listQuery.orderBy ?? {}).length > 0 ? listQuery.orderBy : { createdAt: 'desc' },
+      include: { user: { select: { id: true, name: true, role: true } } },
+    }),
+    prisma.auditLog.count({ where: listQuery.where }),
+  ]);
+
+  return paginate(rows, totalData, listQuery.take);
 }
 
 /** Does `startTaskId` already (transitively) depend on `targetTaskId`? */
@@ -415,7 +448,7 @@ export async function addDependency(user: JwtPayload, taskId: string, input: Add
 async function assertCanCollaborate(user: JwtPayload, taskId: string) {
   const task = await prisma.task.findFirst({
     where: { id: taskId, deletedAt: null },
-    include: { project: { select: { members: { select: { userId: true } } } } },
+    include: { project: { select: { members: activeMemberIds } } },
   });
   if (!task) throw new NotFoundError('Task not found');
   if (user.role === 'CLIENT') {

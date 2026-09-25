@@ -58,8 +58,8 @@ tasks.post('/:id/dependencies', requireRole('PM'), async (c) => {
 });
 
 tasks.get('/:id/audit-logs', async (c) => {
-  const entries = await taskService.listAuditLogs(c.get('user'), c.req.param('id'));
-  return c.json({ entries });
+  const result = await taskService.listAuditLogs(c.get('user'), c.req.param('id'), c.req.query());
+  return c.json(result);
 });
 
 // PM and Internal Team (project members) can discuss a task; Client Guest cannot.

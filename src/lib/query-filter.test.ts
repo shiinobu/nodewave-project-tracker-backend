@@ -156,3 +156,28 @@ describe('buildListQuery — malformed input is a 422, never silently ignored', 
     expect(result.where.AND[1].AND).toEqual([{ category: 'Local' }]);
   });
 });
+
+describe('buildListQuery — a column that can be searched but not filtered', () => {
+  const notesSpec: ListQuerySpec = {
+    allowedFields: ['name', 'createdAt'],
+    searchableFields: ['name', 'notes'],
+    maxPageSize: 50,
+    defaultPageSize: 10,
+  };
+  const run = (query: Record<string, string>) => buildListQuery(query, notesSpec, MANDATORY);
+
+  test('is searched like any other string column', () => {
+    const result = run({ searchFilters: json({ notes: 'zebra' }) });
+    expect(result.where.AND[1].AND).toEqual([
+      { notes: { contains: 'zebra', mode: 'insensitive' } },
+    ]);
+  });
+
+  test('is still refused as an exact filter, a range or an order key', () => {
+    expect(() => run({ filters: json({ notes: 'zebra' }) })).toThrow(ValidationError);
+    expect(() => run({ rangedFilters: json([{ key: 'notes', start: 'a', end: 'b' }]) })).toThrow(
+      ValidationError,
+    );
+    expect(() => run({ orderKey: 'notes' })).toThrow(ValidationError);
+  });
+});

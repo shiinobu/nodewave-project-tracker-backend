@@ -166,7 +166,10 @@ export function buildListQuery(
     throw new ValidationError('Invalid query parameters', errors);
   }
 
-  const result = new BuildQueryFilter(spec).build(filter);
+  // ezfilter treats allowedFields as every column a request may mention, searches included.
+  // Which parameter may use which column was already checked in parseListQuery.
+  const known = [...new Set([...spec.allowedFields, ...spec.searchableFields])];
+  const result = new BuildQueryFilter({ ...spec, allowedFields: known }).build(filter);
   const { isValid, errors: buildErrors, warnings } = result.validation;
   if (!isValid || warnings.length > 0) {
     throw new ValidationError('Invalid query parameters', [...buildErrors, ...warnings]);
