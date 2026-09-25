@@ -6,6 +6,7 @@
     "moduleDetection": "force",
     "lib": ["ES2022"],
     "types": ["bun"],
+    "typeRoots": ["./node_modules/@types"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,

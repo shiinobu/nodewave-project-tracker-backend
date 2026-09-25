@@ -13,3 +13,6 @@ coverage
 /.windsurf
 /.agents
 skills-lock.json
+
+# Vercel CLI link metadata (project and team ids)
+.vercel
