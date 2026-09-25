@@ -2,7 +2,7 @@
 
 <div align="justify">
 
-REST API for the NodeWave project tracker, written for the NodeWave Fullstack Engineer technical test. It provides authentication, role-based access to projects and tasks, task dependencies with a computed Blocked state, optimistic locking and an audit trail, on top of PostgreSQL through Prisma. The web client is [nodewave-project-tracker-frontend](https://github.com/shiinobu/nodewave-project-tracker-frontend), which calls this API from the browser.
+REST API for the NodeWave project tracker. It provides authentication, role-based access to projects and tasks, task dependencies with a computed Blocked state, optimistic locking and an audit trail, on top of PostgreSQL through Prisma. The web client is [nodewave-project-tracker-frontend](https://github.com/shiinobu/nodewave-project-tracker-frontend), which calls this API from the browser.
 
 ## Stack
 
@@ -44,7 +44,7 @@ client@nodewave.id      Client Guest
 ## Environment variables
 
 ```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/technical_test?schema=public"
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/nodewave_tracker?schema=public"
 JWT_SECRET="change-me-to-a-long-random-string"
 JWT_EXPIRES_IN="1d"
 PORT=8000
@@ -210,7 +210,7 @@ Husky installs two git hooks through the `prepare` script: `pre-commit` runs `bu
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on every pull request. It is one job on `ubuntu-latest` with Bun 1.4.2, a `postgres:17` service container (database `technical_test`), and `DATABASE_URL` and `JWT_SECRET` set for CI only. It has no deployment step and runs these steps in order:
+`.github/workflows/ci.yml` runs on pushes to `main` and on every pull request. It is one job on `ubuntu-latest` with Bun 1.4.2, a `postgres:17` service container (database `nodewave_tracker`), and `DATABASE_URL` and `JWT_SECRET` set for CI only. It has no deployment step and runs these steps in order:
 
 1. `bun install --frozen-lockfile` (runs `prisma generate` through `postinstall`)
 2. `bun run lint`
@@ -218,6 +218,10 @@ Husky installs two git hooks through the `prepare` script: `pre-commit` runs `bu
 4. `bunx prisma migrate deploy`
 5. `bun run test`
 6. `bun run build`
+
+## Deployment
+
+The API runs on Vercel (Hobby plan) with the Bun runtime and the `sin1` region, both set in `vercel.json`, at https://nodewave-project-tracker-backend.vercel.app, and it uses a Neon PostgreSQL database in Singapore. `src/server.ts` calls `Bun.serve` so that Vercel can route requests to the app, and `tsconfig.json` sets `typeRoots` because the Vercel build compiles TypeScript from a temporary tsconfig that extends this one and would not find `@types/bun` otherwise. The production environment needs `DATABASE_URL` (the pooled Neon URL), `JWT_SECRET` and `CORS_ORIGIN` (the frontend origin). Migrations and the seed are run from a local machine against the direct Neon URL with `bun run db:deploy` and `bun run db:seed`, and every push to `main` redeploys through the Vercel Git integration.
 
 ## Known limitations
 
