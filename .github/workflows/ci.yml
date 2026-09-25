@@ -15,7 +15,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: technical_test
+          POSTGRES_DB: nodewave_tracker
         ports:
           - 5432:5432
         options: >-
@@ -25,7 +25,7 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/technical_test?schema=public
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nodewave_tracker?schema=public
       JWT_SECRET: ci-only-secret-not-used-in-production
 
     steps:

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "technical-test-backend",
+      "name": "nodewave-project-tracker-backend",
       "dependencies": {
         "@nodewave/prisma-ezfilter": "^0.2.1",
         "@prisma/adapter-pg": "^7.10.0",

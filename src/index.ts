@@ -16,7 +16,7 @@ app.use(
   }),
 );
 
-app.get('/', (c) => c.json({ status: 'ok', service: 'technical-test-backend' }));
+app.get('/', (c) => c.json({ status: 'ok', service: 'nodewave-project-tracker-backend' }));
 app.get('/health', (c) => c.json({ status: 'ok' }));
 app.route('/api', routes);
 
