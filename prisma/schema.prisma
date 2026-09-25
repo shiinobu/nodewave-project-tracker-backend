@@ -1,0 +1,178 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  PM
+  INTERNAL
+  CLIENT
+}
+
+enum Department {
+  UIUX
+  FRONTEND
+  BACKEND
+}
+
+// "Blocked" is not a stored state: it's computed from unmet TaskDependency rows so it
+// can never drift out of sync with the dependency graph (see task.service.ts).
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  STATUS_CHANGE
+}
+
+model User {
+  id         String      @id @default(cuid())
+  email      String      @unique
+  password   String
+  name       String
+  role       Role
+  department Department?
+  avatarUrl  String?
+  isActive   Boolean     @default(true)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  deletedAt  DateTime?
+
+  createdProjects    Project[]        @relation("ProjectCreatedBy")
+  projectMemberships ProjectMember[]
+  assignedTasks      Task[]           @relation("TaskAssignee")
+  attachments        TaskAttachment[]
+  comments           TaskComment[]
+  auditLogs          AuditLog[]
+
+  @@map("users")
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  createdById String
+  createdBy   User      @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  members ProjectMember[]
+  tasks   Task[]
+
+  @@map("projects")
+}
+
+// Governs which Internal Team members and which Client Guest(s) can see a project.
+// PMs are not listed here: they have global read/write access per the brief.
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model Task {
+  id              String     @id @default(cuid())
+  projectId       String
+  project         Project    @relation(fields: [projectId], references: [id])
+  title           String
+  description     String?
+  status          TaskStatus @default(TODO)
+  department      Department
+  assigneeId      String?
+  assignee        User?      @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  isClientVisible Boolean    @default(false)
+  // Optimistic-locking token: every update must supply the version it read and
+  // increments it; a stale version means someone else changed the task first (409).
+  version         Int        @default(1)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  deletedAt       DateTime?
+
+  dependsOn    TaskDependency[] @relation("DependentTask")
+  dependedOnBy TaskDependency[] @relation("PrerequisiteTask")
+  attachments  TaskAttachment[]
+  comments     TaskComment[]
+  auditLogs    AuditLog[]
+
+  @@map("tasks")
+}
+
+// taskId is blocked until dependsOnTaskId reaches DONE.
+model TaskDependency {
+  id              String   @id @default(cuid())
+  taskId          String
+  task            Task     @relation("DependentTask", fields: [taskId], references: [id])
+  dependsOnTaskId String
+  dependsOnTask   Task     @relation("PrerequisiteTask", fields: [dependsOnTaskId], references: [id])
+  createdAt       DateTime @default(now())
+
+  @@unique([taskId, dependsOnTaskId])
+  @@map("task_dependencies")
+}
+
+model TaskAttachment {
+  id           String    @id @default(cuid())
+  taskId       String
+  task         Task      @relation(fields: [taskId], references: [id])
+  uploadedById String
+  uploadedBy   User      @relation(fields: [uploadedById], references: [id])
+  fileName     String
+  fileUrl      String
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+
+  @@map("task_attachments")
+}
+
+// isInternal comments/identities are stripped from Client Guest API responses at the query layer.
+model TaskComment {
+  id         String    @id @default(cuid())
+  taskId     String
+  task       Task      @relation(fields: [taskId], references: [id])
+  authorId   String
+  author     User      @relation(fields: [authorId], references: [id])
+  body       String
+  isInternal Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  deletedAt  DateTime?
+
+  @@map("task_comments")
+}
+
+// Immutable: rows are only ever inserted, never updated or soft-deleted.
+model AuditLog {
+  id            String      @id @default(cuid())
+  taskId        String
+  task          Task        @relation(fields: [taskId], references: [id])
+  userId        String
+  user          User        @relation(fields: [userId], references: [id])
+  action        AuditAction
+  changedColumn String?
+  oldValue      String?
+  newValue      String?
+  createdAt     DateTime    @default(now())
+
+  @@map("audit_logs")
+}

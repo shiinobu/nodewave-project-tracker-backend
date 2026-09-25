@@ -1,0 +1,15 @@
+node_modules
+dist
+.env
+.env.local
+*.log
+.DS_Store
+coverage
+
+/generated/prisma
+
+# AI assistant skill bundles auto-installed by `prisma init` (Prisma 7) — tooling, not project code
+/.claude/skills
+/.windsurf
+/.agents
+skills-lock.json
