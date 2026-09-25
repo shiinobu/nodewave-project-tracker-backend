@@ -1,191 +1,232 @@
-# Technical Test — Backend
+# NodeWave Project Tracker (backend)
 
-TypeScript + Bun + Hono + Prisma (PostgreSQL) API for the Fullstack Engineer assessment: a
-project/task tracker with state-based permissions, inter-task dependencies, optimistic
-locking, and an immutable audit trail.
+<div align="justify">
+
+REST API for the NodeWave project tracker, written for the NodeWave Fullstack Engineer technical test. It provides authentication, role-based access to projects and tasks, task dependencies with a computed Blocked state, optimistic locking and an audit trail, on top of PostgreSQL through Prisma. The web client is [nodewave-project-tracker-frontend](https://github.com/shiinobu/nodewave-project-tracker-frontend), which calls this API from the browser.
 
 ## Stack
 
-Bun, Hono, Prisma 7 (`prisma-client` generator + `@prisma/adapter-pg`), PostgreSQL, JWT
-(`jsonwebtoken`), Zod, `@nodewave/prisma-ezfilter`, Biome, Husky, Commitlint.
+- Bun and Hono
+- Prisma 7 (`prisma-client` generator, `@prisma/adapter-pg`) on PostgreSQL
+- `jsonwebtoken` for JWT, `Bun.password` (bcrypt) for passwords, Zod 4 for request validation
+- `@nodewave/prisma-ezfilter` for list queries
+- TypeScript (strict) and `bun test`
+- Biome, Husky, commitlint
+
+## Requirements
+
+- Bun 1.4.2 (the version CI uses)
+- A PostgreSQL database reachable through `DATABASE_URL` (CI runs PostgreSQL 17)
+- Node.js 20.19, 22.12 or 24 and later, for the Prisma CLI
 
 ## Getting started
 
 ```bash
-bun install                 # also runs `prisma generate` (postinstall) -> generated/prisma
-cp .env.example .env        # then edit DATABASE_URL / JWT_SECRET as needed
-bun run db:migrate          # applies prisma/migrations (use `bun run db:deploy` outside dev)
-bun run db:seed             # creates the 5 demo accounts + a sample project
-bun run dev                 # http://localhost:8000
+bun install
+cp .env.example .env
+bun run db:migrate
+bun run db:seed
+bun run dev
 ```
 
-`generated/prisma` is git-ignored and Prisma 7 does not generate it on its own, so a fresh
-checkout needs `bun install` (or `bun run db:generate`) before `tsc`, tests or `build` work.
+`bun install` also runs `prisma generate` (`postinstall`), which creates `generated/prisma`. That directory is git-ignored, so a fresh checkout needs the install (or `bun run db:generate`) before `typecheck`, `test` or `build` work. `db:migrate` runs `prisma migrate dev`, and `bun run db:deploy` (`prisma migrate deploy`) is the command for any database that is not a development one. The API listens on http://localhost:8000.
 
-Environment variables (`.env`, template in `.env.example`):
+`bun run db:seed` creates the five accounts below, all with the password `password123`, and one project, "NodeWave Client Portal Revamp", with the four non-PM accounts as members. The project has four tasks: UI Design (UI/UX, Done), Backend API Integration (Backend, In Progress), Frontend Slicing (Frontend, To Do, depends on the first two, so it shows as blocked) and QA Regression Pass (Backend, To Do, depends on Frontend Slicing, not visible to the client). Users, the project and the tasks are upserted, but the seed's two comments are inserted again on every run.
 
-| Variable         | Required | Purpose                                                                                                |
-| ---------------- | -------- | ------------------------------------------------------------------------------------------------------ |
-| `DATABASE_URL`   | yes      | PostgreSQL connection string                                                                           |
-| `JWT_SECRET`     | yes      | JWT signing key — use a long random string                                                             |
-| `JWT_EXPIRES_IN` | no       | token lifetime, default `1d`                                                                           |
-| `PORT`           | no       | HTTP port, default `8000`                                                                              |
-| `CORS_ORIGIN`    | no       | allowed frontend origin, default `http://localhost:3000`                                               |
-| `PM_SIGNUP_CODE` | no       | invite code that lets `POST /api/auth/register` create a `PM`; unset = nobody can self-register as PM |
+```text
+pm@nodewave.id          Product Manager
+uiux@nodewave.id        Internal Team, UI/UX
+frontend@nodewave.id    Internal Team, Frontend
+backend@nodewave.id     Internal Team, Backend
+client@nodewave.id      Client Guest
+```
 
-Seeded accounts (password for all: `password123`):
+## Environment variables
 
-| Role           | Email                  | Department |
-| -------------- | ----------------------- | ---------- |
-| Product Manager | `pm@nodewave.id`        | —          |
-| Internal Team  | `uiux@nodewave.id`      | UI/UX      |
-| Internal Team  | `frontend@nodewave.id`  | Frontend   |
-| Internal Team  | `backend@nodewave.id`   | Backend    |
-| Client Guest   | `client@nodewave.id`    | —          |
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/technical_test?schema=public"
+JWT_SECRET="change-me-to-a-long-random-string"
+JWT_EXPIRES_IN="1d"
+PORT=8000
+# Optional. Without it nobody can self-register as a PM (use the seeded PM account).
+# PM_SIGNUP_CODE="pick-a-long-random-string"
+CORS_ORIGIN="http://localhost:3000"
+```
 
-## Architecture overview
+- `DATABASE_URL`: PostgreSQL connection string. Required.
+- `JWT_SECRET`: signing key for tokens. Required, the app throws at startup without it.
+- `JWT_EXPIRES_IN`: token lifetime. Defaults to `1d`.
+- `PORT`: HTTP port. Defaults to `8000`.
+- `CORS_ORIGIN`: the single allowed origin, sent with `credentials: true`. Defaults to `http://localhost:3000`.
+- `PM_SIGNUP_CODE`: invite code that allows `POST /api/auth/register` to create a PM. When unset, nobody can register as a PM.
 
-### RBAC + ABAC
+## Project structure
 
-`User.role` (`PM` / `INTERNAL` / `CLIENT`) is the coarse role; `User.department`
-(`UIUX` / `FRONTEND` / `BACKEND`, set only for `INTERNAL`) and the task's own `status` add
-the attribute-based layer. Authorization is enforced in the **service layer**
-(`src/services/*.ts`), never trusted from the client, and route handlers additionally gate
-by role via `requireRole()` (`src/middlewares/auth.middleware.ts`) before a request even
-reaches a service.
+```text
+nodewave-project-tracker-backend/
+├── prisma/
+│   ├── migrations/               SQL migrations
+│   ├── schema.prisma             data model
+│   └── seed.ts                   demo accounts, one project, four tasks
+├── src/
+│   ├── dto/                      Zod schemas for request bodies
+│   ├── lib/
+│   │   ├── errors.ts             HttpError and its subclasses
+│   │   ├── http.ts               readJson
+│   │   ├── jwt.ts                sign and verify tokens
+│   │   ├── password.ts           bcrypt through Bun.password
+│   │   ├── prisma.ts             Prisma Client with the pg adapter
+│   │   └── query-filter.ts       strict list query builder on top of ezfilter
+│   ├── middlewares/
+│   │   ├── auth.middleware.ts    authenticate, requireRole
+│   │   └── error.middleware.ts   maps errors to JSON responses
+│   ├── routes/                   auth, projects, tasks and users, mounted under /api
+│   ├── services/
+│   │   ├── audit.service.ts      audit log writes
+│   │   ├── auth.service.ts       register, login, current user
+│   │   ├── project.service.ts    projects and the Client Guest summary
+│   │   ├── task-policy.ts        pure transition and assignee rules
+│   │   ├── task.service.ts       tasks, masking, dependencies, comments, attachments
+│   │   └── user.service.ts       user directory for PMs
+│   ├── types/
+│   │   └── hono.ts               context variables
+│   └── index.ts                  Hono app: logger, CORS, health checks, error handler
+├── generated/prisma/             Prisma Client (git-ignored, created by prisma generate)
+├── .github/workflows/ci.yml      CI
+├── .env.example                  environment template
+└── prisma7.config.ts             Prisma CLI config: schema, migrations, DATABASE_URL
+```
 
-- **PM** — full read/write on projects and tasks, except it can never move a task to
-  `DONE` — only the executor completes work (`task-policy.ts#assertTransition`). Only PM can
-  create projects, create tasks, edit a task's core fields, and declare dependencies.
-  `PM` cannot be self-registered: `POST /auth/register` with `role: "PM"` needs the server's
-  `PM_SIGNUP_CODE` as `inviteCode` (and is refused when none is configured). `INTERNAL` and
-  `CLIENT` can sign up freely — they see nothing until a PM adds them to a project.
-- **Internal Team** — task visibility is scoped to projects they're a `ProjectMember` of
-  (`task.service.ts#listTasks`/`getTask`). Changing a task's status additionally requires
-  `user.department === task.department` (and the assignee, if one is set) — see
-  "State-based permissions" below. They can never touch `title`/`description` (only PM's
-  `PATCH /tasks/:id` can), only upload attachments and change status.
-- **Client Guest** — scoped to projects they're a member of, and *within* those, only to
-  tasks flagged `isClientVisible`. `GET /projects/:id` for a client returns aggregate
-  metrics (`percentComplete`) computed from **all** tasks, never the task list itself.
+## Architecture
 
-### Data masking (not CSS)
+```text
+HTTP request
+  ↓
+src/index.ts             logger, CORS, JSON 404, error handler
+  ↓
+src/routes/*             authenticate, requireRole, Zod parsing
+  ↓
+src/services/*           role scoping, business rules, transactions
+  ↓
+src/lib/prisma.ts        Prisma Client with the pg adapter
+  ↓
+PostgreSQL
+```
 
-`task.service.ts#toClientTask` is a hard boundary: for `CLIENT` role it builds an entirely
-separate response shape that omits `assignee` and any internal (`isInternal: true`)
-comments before the JSON ever leaves the server — the frontend never receives the data it
-isn't supposed to render, rather than receiving it and hiding it.
+Route handlers stay thin: each one parses the body with a schema from `src/dto/*` (through `readJson`), passes through `authenticate` and, where needed, `requireRole`, and calls one service function with the JWT payload. Services load the data, apply the rules, run multi-step writes in `prisma.$transaction` and throw the `HttpError` subclasses from `src/lib/errors.ts`.
 
-### State-based permissions + dependency graph
+### Authentication
 
-`Task.status` is one of `TODO` / `IN_PROGRESS` / `DONE`. "Blocked" is **not** a stored
-status — it's computed on every read from unmet `TaskDependency` rows
-(`task.service.ts#computeBlocked`), so it can never drift out of sync with the dependency
-graph the way a manually-set status could. `PATCH /tasks/:id/status` refuses any forward move
-(start *or* complete) while a prerequisite isn't `DONE`, returning `403` with the list of
-what's still blocking it — the same check the frontend uses to disable the button. The rules
-themselves are pure functions in `services/task-policy.ts` (`assertTransition`,
-`assertAssignable`), so they are table-tested without a database.
+Passwords are hashed with `Bun.password` (bcrypt, cost 10). `POST /auth/register` and `POST /auth/login` return `{ token, user }`, where the token is a JWT signed with `JWT_SECRET` that carries `sub`, `email`, `role` and `department` and expires after `JWT_EXPIRES_IN`. `authenticate` in `src/middlewares/auth.middleware.ts` verifies the `Authorization: Bearer` header and puts the payload on the Hono context, and it does not look the user up again. Registration is open for Internal Team (a department is required) and Client Guest, since both see nothing until a PM adds them to a project. A PM registration needs an `inviteCode` equal to `PM_SIGNUP_CODE`, compared with `timingSafeEqual` over SHA-256 digests, and is refused when the variable is unset. `POST /auth/logout` returns a message and keeps no server state.
 
-An assignee must be an `INTERNAL` member of the task's project from the task's own
-department (exactly what the assignee picker offers), and a dependency must point at an
-existing task of the same project; otherwise the request is a `422`.
-`POST /tasks/:id/dependencies` runs a BFS (`wouldCreateCycle`) before inserting, so a
-dependency that would create a cycle is rejected with `422`.
+### Roles and scoping
 
-### Concurrency: optimistic locking
+Access is checked in two places. `requireRole` in the route files rejects roles that can never use an endpoint, and the service then scopes the data. A PM sees every project and task, while Internal Team members and Client Guests only see projects where they are a `ProjectMember`, and Client Guests only see tasks with `isClientVisible`. For lists this is a `mandatoryWhere` clause that `buildListQuery` ANDs into the query, so a query parameter cannot widen it, and `GET /projects/:id` and `GET /tasks/:id` answer `403` outside that scope. A PM creates and deletes projects and tasks, edits a task's title, description, assignee and client visibility, and adds dependencies. Internal Team members change the status of tasks in their own department and add comments and attachment links, and Client Guests can only read.
 
-Every `Task` carries an integer `version`. Mutating endpoints (`PATCH /tasks/:id`,
-`PATCH /tasks/:id/status`) require the caller to send back the `version` they last read.
-The update runs as `updateMany({ where: { id, version } })`; if the row's version has since
-moved on, `count` comes back `0` and the request fails with **409 Conflict** instead of
-silently overwriting a concurrent edit. Verified manually: two clients holding the same
-stale version, the second write gets `409`.
+### Task status and dependencies
 
-### Immutable audit trail
+`Task.status` is `TODO`, `IN_PROGRESS` or `DONE`. Blocked is not stored: `computeBlocked` in `src/services/task.service.ts` derives `isBlocked` and `blockedBy` on every read from the dependencies whose prerequisite is not `DONE`. The transition rules are pure functions in `src/services/task-policy.ts`. `assertTransition` refuses status changes from Client Guests and never lets a PM set `DONE`. An Internal Team member has to be a project member in the task's department, has to be the assignee when the task has one, and can only advance a task by one step. For every role, a forward move is refused while a prerequisite is unfinished, with a `403` whose `details` lists the blocking tasks. `assertAssignable` requires an assignee to be an Internal Team member of the project from the task's department, and answers `422` otherwise. Dependencies are set with `dependsOnTaskIds` when a task is created or with `POST /tasks/:id/dependencies`, and either way they must point to existing tasks of the same project. The endpoint also rejects a self-dependency, a duplicate and a cycle with a `422`, and `wouldCreateCycle` finds cycles by walking the existing dependencies breadth-first.
 
-Every field-level change to a task (status, description, assignee, dependency) is written
-to `AuditLog` — `userId`, `action`, `changedColumn`, `oldValue`, `newValue`, `createdAt` —
-inside the **same transaction** as the mutation (`services/audit.service.ts`, always called
-from within a `prisma.$transaction`), so the log can never fall out of sync with the data it
-describes. Rows are only ever inserted; nothing in the codebase updates or deletes an
-`AuditLog` row. Soft deletes (`deletedAt`) are used everywhere else instead of hard
-deletes. Read back via `GET /tasks/:id/audit-logs`.
+### Client Guest masking
+
+For a Client Guest, `toClientTask` in `src/services/task.service.ts` builds a separate response shape without `department`, the assignee, `version` and internal comments. `blockedBy` only names prerequisites that are client-visible, while `isBlocked` still counts the others. The task list drops `department` from the fields a Client Guest may filter, search or sort on, so it cannot be used to probe the masked value. `GET /projects` and `GET /projects/:id` return a summary (`id`, `name`, `description`, `percentComplete`, `totalTasks`, `completedTasks`) computed over all non-deleted tasks of the project, not only the shared ones. Only a PM can make a comment visible to the client, and comments from Internal Team members are always internal.
+
+### Optimistic locking
+
+Every task has an integer `version`, starting at 1. `PATCH /tasks/:id`, `PATCH /tasks/:id/status` and `DELETE /tasks/:id?version=<n>` require the version the caller last read. The write is `updateMany({ where: { id, version } })` with `version` incremented, and when no row matches (`count === 0`) the API answers `409`, so a concurrent edit is not overwritten silently.
+
+### Audit trail and soft deletes
+
+`recordAudit` in `src/services/audit.service.ts` writes one `AuditLog` row per changed field (`userId`, `action`, `changedColumn`, `oldValue`, `newValue`, `createdAt`) inside the same `prisma.$transaction` as the change, so a failed audit write rolls the change back. It records task creation and deletion, status changes, edits to title, description, assignee and client visibility, and added dependencies and attachments. Comments are not audited, and a creation row carries no field values. The application only inserts audit rows, but the database does not prevent updates or deletes. Deleting a project or a task sets `deletedAt` instead of removing the row, and reads filter on it. `GET /tasks/:id/audit-logs` returns `{ entries }`, newest first, to PMs and to Internal Team members of the project.
+
+### List queries
+
+`/projects`, `/tasks` and `/users` accept `filters`, `searchFilters`, `rangedFilters`, `orderKey`, `orderRule`, `page` and `rows`, built on `@nodewave/prisma-ezfilter`. The library only warns about unknown fields and forwards the JSON into Prisma, so `buildListQuery` in `src/lib/query-filter.ts` first checks the input against a `ListQuerySpec` per resource. Filter, range and order keys must be listed scalar columns, `searchFilters` only accepts the listed string columns, `orderRule` is `asc` or `desc`, and `page` and `rows` are positive integers up to a limit (`rows` up to 100, or 200 for users). Malformed JSON, unknown keys, relation paths and operator objects are rejected with a `422` instead of being ignored. Responses have the shape `{ entries, totalData, totalPage }`, and `rows` defaults to 10 when it is omitted.
+
+### Errors
+
+Errors are JSON of the form `{ error, details? }`. The `HttpError` subclasses in `src/lib/errors.ts` map to `401`, `403`, `404`, `409` and `422`, Zod failures are a `422` with the flattened issues in `details`, and a body that is empty or not valid JSON is a `422` (`readJson` in `src/lib/http.ts`). `src/middlewares/error.middleware.ts` maps Prisma `P2002` to `409`, `P2003` to `422`, `P2025` to `404` and `PrismaClientValidationError` to `422`, with fixed messages instead of Prisma's text. Unknown routes return a JSON `404`, and anything else is logged and returned as a `500` with a generic message.
 
 ## API
 
-All routes are mounted under `/api`. See `src/routes/*.ts` for the full list; the
-interesting ones:
-
-- `POST /api/auth/register` (`role: "PM"` needs `inviteCode`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
-- `GET /api/users` (PM-only directory, for assignee/member pickers)
-- `GET /api/projects`, `GET /api/projects/:id`, `POST /api/projects` (PM), `DELETE /api/projects/:id` (PM)
-- `GET /api/tasks`, `GET /api/tasks/:id`
-- `POST /api/tasks` (PM), `PATCH /api/tasks/:id` (PM, core fields, optimistic-locked)
-- `PATCH /api/tasks/:id/status` (PM/Internal, state machine + dependency + optimistic lock)
-- `DELETE /api/tasks/:id?version=<n>` (PM, optimistic-locked soft delete)
-- `POST /api/tasks/:id/dependencies` (PM), `GET /api/tasks/:id/audit-logs`
-- `POST /api/tasks/:id/comments`, `POST /api/tasks/:id/attachments` (PM/Internal — see note below)
-
-List endpoints (`/projects`, `/tasks`, `/users`) follow the standard `filters` /
-`searchFilters` / `rangedFilters` / `orderKey` / `orderRule` / `page` / `rows` query
-contract via `@nodewave/prisma-ezfilter` (`src/lib/query-filter.ts`); role scoping is
-ANDed into the generated `where` clause server-side so it can never be relaxed by a query
-param.
-
-ezfilter on its own only *warns* about fields outside `allowedFields` and forwards the
-caller's JSON into Prisma, so every list first goes through `buildListQuery`, which is strict:
-filter, range and order keys must be listed scalar columns of that resource (no dotted
-relation paths, no operator/relation objects as values), `searchFilters` only accepts the
-resource's string columns, `orderRule` is `asc`/`desc`, and `page`/`rows` are positive
-integers. Anything else — including malformed JSON — is a `422` rather than being ignored.
-A Client Guest's task list additionally cannot filter, search or sort on `department`,
-because the response masks it.
-
-Malformed request bodies are a `422` as well, unknown routes a JSON `404`, and Prisma errors
-caused by the caller are mapped to `409`/`422`/`404` instead of leaking as a `500`.
-
-**Attachments are link-based** (`{ fileName, fileUrl }`), not binary upload — no object
-storage (S3/etc.) is provisioned for this scaffold, so "uploading" a work attachment means
-pasting a link to where the file actually lives.
+```text
+GET     /                            health check, no auth
+GET     /health                      health check, no auth
+POST    /api/auth/register           public; role PM needs inviteCode
+POST    /api/auth/login              public
+POST    /api/auth/logout             any role; returns a message
+GET     /api/auth/me                 any role
+GET     /api/users                   PM
+GET     /api/projects                any role; scoped to memberships, PM sees all
+GET     /api/projects/:id            any role; same scoping
+POST    /api/projects                PM
+DELETE  /api/projects/:id            PM; soft delete
+GET     /api/tasks                   any role; scoped and masked per role
+GET     /api/tasks/:id               any role; scoped and masked per role
+POST    /api/tasks                   PM
+PATCH   /api/tasks/:id               PM; title, description, assigneeId, isClientVisible, version
+PATCH   /api/tasks/:id/status        PM, Internal; status, version
+DELETE  /api/tasks/:id?version=<n>   PM; soft delete
+POST    /api/tasks/:id/dependencies  PM
+GET     /api/tasks/:id/audit-logs    PM, Internal (project members)
+POST    /api/tasks/:id/comments      PM, Internal
+POST    /api/tasks/:id/attachments   PM, Internal; fileName and an http(s) fileUrl
+```
 
 ## Testing
 
 ```bash
-bun run test          # bun test — integration tests hit a real database
+bun run test
 ```
 
-Tests run against whatever `DATABASE_URL` is currently configured (your local dev DB is
-fine — every fixture is created under a random `svc-<timestamp>-...` namespace and torn
-down in `afterAll`, so it never touches seeded or hand-created data). Covers:
+`bun test` runs the suites next to the code as `src/**/*.test.ts`. The service suites write to the database that `DATABASE_URL` points to (Bun loads `.env`), so apply the migrations first. Their fixtures use random `svc-` and `auth-` prefixes and are deleted in `afterAll`, and the seeded data is not touched. `src/http.test.ts` goes through the real Hono app and does not write data. The suites cover:
 
-- `computeBlocked`, `assertTransition` and `assertAssignable` as pure functions (no DB).
-- The full `updateTaskStatus` state machine against a real Postgres: department/assignee
-  ABAC, the PM-cannot-complete carve-out (including `TODO -> DONE` on a blocked task), the
-  dependency block, and a genuine optimistic-locking conflict (stale `version` →
-  `ConflictError`).
-- `createTask`/`updateTask` assignee and dependency validation, and `addDependency`'s cycle
-  detection.
-- The query contract (`buildListQuery`): the documented examples, plus rejection of every
-  field/relation/operator outside the allow-list — including the oracle queries a Client
-  Guest could use to probe masked data.
-- The PM sign-up gate, and HTTP-level checks through the real Hono app (error shapes, 404,
-  malformed bodies, Prisma error mapping).
-
-## CI
-
-`.github/workflows/ci.yml` runs on every push/PR to `main`: `bun install` (whose
-`postinstall` generates the Prisma client), Biome format+lint, `tsc` typecheck, spins up a
-`postgres:17` service container and applies migrations, runs the test suite above against
-it, then builds.
+- `src/services/task-policy.test.ts`: `assertTransition` per role and `assertAssignable`, as pure functions.
+- `src/services/task.service.test.ts`: `computeBlocked`; status changes against a real database (department and assignee rules, a PM cannot complete, blocked tasks, a stale version conflicts); masking of internal-only prerequisites for Client Guests; cycle rejection; the list allow-list (a Client Guest cannot probe `department`, an Internal Team member cannot reach another project through a relation filter); assignee and dependency validation on create and update.
+- `src/lib/query-filter.test.ts`: the documented query examples, and rejection of unlisted fields, relations, operators and malformed input.
+- `src/services/auth.service.test.ts`: the PM sign-up gate and `registerSchema`.
+- `src/http.test.ts`: unknown routes, malformed bodies, list parameters, registration and the error handler mapping.
+- `src/dto/task.dto.test.ts`: `assigneeId` validation.
 
 ## Scripts
 
-`bun run dev` · `bun run build` · `bun run test` · `bun run typecheck` ·
-`bun run lint` / `lint:fix` · `bun run db:generate` · `bun run db:migrate` ·
-`bun run db:deploy` · `bun run db:seed` · `bun run db:studio`
+```bash
+bun run dev          # bun run --watch src/index.ts
+bun run build        # bun build src/index.ts --outdir dist --target bun
+bun run start        # bun run dist/index.js, needs a prior build
+bun run test         # bun test
+bun run typecheck    # tsc --noEmit
+bun run lint         # biome check
+bun run lint:fix     # biome check --write
+bun run format       # biome format --write
+bun run db:generate  # prisma generate
+bun run db:migrate   # prisma migrate dev
+bun run db:deploy    # prisma migrate deploy
+bun run db:seed      # bun run prisma/seed.ts
+bun run db:studio    # prisma studio
+```
 
-## Not yet implemented
+Husky installs two git hooks through the `prepare` script: `pre-commit` runs `bun run lint` and `bun run typecheck`, and `commit-msg` runs commitlint with `@commitlint/config-conventional`.
 
-- Daily Standup Auto-Summary endpoint (bonus/optional in the brief).
-- Binary file upload for attachments (currently link-based — see above).
+## CI
+
+`.github/workflows/ci.yml` runs on pushes to `main` and on every pull request. It is one job on `ubuntu-latest` with Bun 1.4.2, a `postgres:17` service container (database `technical_test`), and `DATABASE_URL` and `JWT_SECRET` set for CI only. It has no deployment step and runs these steps in order:
+
+1. `bun install --frozen-lockfile` (runs `prisma generate` through `postinstall`)
+2. `bun run lint`
+3. `bun run typecheck`
+4. `bunx prisma migrate deploy`
+5. `bun run test`
+6. `bun run build`
+
+## Known limitations
+
+- Attachments are links (`fileName` and an http(s) `fileUrl`). Binary upload is not implemented.
+- There is no daily standup summary endpoint.
+- A token is not checked against the database after it is signed. It stays valid until it expires (`JWT_EXPIRES_IN`, `1d` by default), including after logout or after the user is soft-deleted, and `User.isActive` is not read anywhere.
+- The audit trail is append-only by convention. Nothing in the schema or the migrations, such as a trigger, blocks `UPDATE` or `DELETE` on `audit_logs`.
+- There are no endpoints to edit a project or its members, remove a dependency, or edit or delete a comment or an attachment.
+- There is no rate limiting.
+- Biome runs with `preset: none`, so `bun run lint` applies no lint rules.
+
+</div>
