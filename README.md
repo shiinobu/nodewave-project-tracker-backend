@@ -121,7 +121,7 @@ Passwords are hashed with `Bun.password` (bcrypt, cost 10). `POST /auth/register
 
 ### Roles and scoping
 
-Access is checked in two places. `requireRole` in the route files rejects roles that can never use an endpoint, and the service then scopes the data. A PM sees every project and task, while Internal Team members and Client Guests only see projects where they are a `ProjectMember`, and Client Guests only see tasks with `isClientVisible`. For lists this is a `mandatoryWhere` clause that `buildListQuery` ANDs into the query, so a query parameter cannot widen it, and `GET /projects/:id` and `GET /tasks/:id` answer `403` outside that scope. A PM creates and deletes projects and tasks, edits a task's title, description, assignee and client visibility, and adds dependencies. Internal Team members change the status of tasks in their own department and add comments and attachment links, and Client Guests can only read.
+Access is checked in two places. `requireRole` in the route files rejects roles that can never use an endpoint, and the service then scopes the data. A PM sees every project and task, while Internal Team members and Client Guests only see projects where they are a `ProjectMember`, and Client Guests only see tasks with `isClientVisible`. For lists this is a `mandatoryWhere` clause that `buildListQuery` ANDs into the query, so a query parameter cannot widen it, and `GET /projects/:id` and `GET /tasks/:id` answer `403` outside that scope. A PM creates and deletes projects and tasks, edits a task's title, description, assignee and client visibility, and adds dependencies. Internal Team members change the status of tasks in their own department and add comments and attachment links, and Client Guests can only read. A PM also renames projects and manages their members: adding a member gives access at once, and removing one is a soft delete (`deletedAt` on the membership row) that is refused while the member has unfinished tasks in the project, and adding the same user again reuses that row.
 
 ### Task status and dependencies
 
@@ -129,7 +129,7 @@ Access is checked in two places. `requireRole` in the route files rejects roles 
 
 ### Client Guest masking
 
-For a Client Guest, `toClientTask` in `src/services/task.service.ts` builds a separate response shape without `department`, the assignee, `version` and internal comments. `blockedBy` only names prerequisites that are client-visible, while `isBlocked` still counts the others. The task list drops `department` from the fields a Client Guest may filter, search or sort on, so it cannot be used to probe the masked value. `GET /projects` and `GET /projects/:id` return a summary (`id`, `name`, `description`, `percentComplete`, `totalTasks`, `completedTasks`) computed over all non-deleted tasks of the project, not only the shared ones. Only a PM can make a comment visible to the client, and comments from Internal Team members are always internal.
+For a Client Guest, `toClientTask` in `src/services/task.service.ts` builds a separate response shape without `department`, the assignee, `version` and internal comments. `blockedBy` only names prerequisites that are client-visible, while `isBlocked` still counts the others. The task list drops `department` and `assigneeId` from the fields a Client Guest may filter, search or sort on, so it cannot be used to probe the masked value. `GET /projects` and `GET /projects/:id` return a summary (`id`, `name`, `description`, `percentComplete`, `totalTasks`, `completedTasks`) computed over all non-deleted tasks of the project, not only the shared ones. Only a PM can make a comment visible to the client, and comments from Internal Team members are always internal.
 
 ### Optimistic locking
 
@@ -137,11 +137,11 @@ Every task has an integer `version`, starting at 1. `PATCH /tasks/:id`, `PATCH /
 
 ### Audit trail and soft deletes
 
-`recordAudit` in `src/services/audit.service.ts` writes one `AuditLog` row per changed field (`userId`, `action`, `changedColumn`, `oldValue`, `newValue`, `createdAt`) inside the same `prisma.$transaction` as the change, so a failed audit write rolls the change back. It records task creation and deletion, status changes, edits to title, description, assignee and client visibility, and added dependencies and attachments. Comments are not audited, and a creation row carries no field values. The application only inserts audit rows, but the database does not prevent updates or deletes. Deleting a project or a task sets `deletedAt` instead of removing the row, and reads filter on it. `GET /tasks/:id/audit-logs` returns `{ entries }`, newest first, to PMs and to Internal Team members of the project.
+`recordAudit` in `src/services/audit.service.ts` writes one `AuditLog` row per changed field (`userId`, `action`, `changedColumn`, `oldValue`, `newValue`, `createdAt`) inside the same `prisma.$transaction` as the change, so a failed audit write rolls the change back. It records task creation and deletion, status changes, edits to title, description, assignee and client visibility, and added dependencies and attachments. Comments are not audited, and a creation row carries no field values. The application only inserts audit rows, but the database does not prevent updates or deletes. Deleting a project or a task sets `deletedAt` instead of removing the row, and reads filter on it. `GET /tasks/:id/audit-logs` follows the list query contract (`entries`, `totalData` and `totalPage`, newest first unless an order is given) and is open to PMs and to Internal Team members of the project.
 
 ### List queries
 
-`/projects`, `/tasks` and `/users` accept `filters`, `searchFilters`, `rangedFilters`, `orderKey`, `orderRule`, `page` and `rows`, built on `@nodewave/prisma-ezfilter`. The library only warns about unknown fields and forwards the JSON into Prisma, so `buildListQuery` in `src/lib/query-filter.ts` first checks the input against a `ListQuerySpec` per resource. Filter, range and order keys must be listed scalar columns, `searchFilters` only accepts the listed string columns, `orderRule` is `asc` or `desc`, and `page` and `rows` are positive integers up to a limit (`rows` up to 100, or 200 for users). Malformed JSON, unknown keys, relation paths and operator objects are rejected with a `422` instead of being ignored. Responses have the shape `{ entries, totalData, totalPage }`, and `rows` defaults to 10 when it is omitted.
+`/projects`, `/tasks`, `/users` and a task's audit history accept `filters`, `searchFilters`, `rangedFilters`, `orderKey`, `orderRule`, `page` and `rows`, built on `@nodewave/prisma-ezfilter`. The library only warns about unknown fields and forwards the JSON into Prisma, so `buildListQuery` in `src/lib/query-filter.ts` first checks the input against a `ListQuerySpec` per resource. Filter, range and order keys must be listed scalar columns, `searchFilters` only accepts the listed string columns, `orderRule` is `asc` or `desc`, and `page` and `rows` are positive integers up to a limit (`rows` up to 100, or 200 for users). Malformed JSON, unknown keys, relation paths and operator objects are rejected with a `422` instead of being ignored. Responses have the shape `{ entries, totalData, totalPage }`, and `rows` defaults to 10 when it is omitted.
 
 ### Errors
 
@@ -150,27 +150,30 @@ Errors are JSON of the form `{ error, details? }`. The `HttpError` subclasses in
 ## API
 
 ```text
-GET     /                            health check, no auth
-GET     /health                      health check, no auth
-POST    /api/auth/register           public; role PM needs inviteCode
-POST    /api/auth/login              public
-POST    /api/auth/logout             any role; returns a message
-GET     /api/auth/me                 any role
-GET     /api/users                   PM
-GET     /api/projects                any role; scoped to memberships, PM sees all
-GET     /api/projects/:id            any role; same scoping
-POST    /api/projects                PM
-DELETE  /api/projects/:id            PM; soft delete
-GET     /api/tasks                   any role; scoped and masked per role
-GET     /api/tasks/:id               any role; scoped and masked per role
-POST    /api/tasks                   PM
-PATCH   /api/tasks/:id               PM; title, description, assigneeId, isClientVisible, version
-PATCH   /api/tasks/:id/status        PM, Internal; status, version
-DELETE  /api/tasks/:id?version=<n>   PM; soft delete
-POST    /api/tasks/:id/dependencies  PM
-GET     /api/tasks/:id/audit-logs    PM, Internal (project members)
-POST    /api/tasks/:id/comments      PM, Internal
-POST    /api/tasks/:id/attachments   PM, Internal; fileName and an http(s) fileUrl
+GET     /                                  health check, no auth
+GET     /health                            health check, no auth
+POST    /api/auth/register                 public; role PM needs inviteCode
+POST    /api/auth/login                    public
+POST    /api/auth/logout                   any role; returns a message
+GET     /api/auth/me                       any role
+GET     /api/users                         PM
+GET     /api/projects                      any role; scoped to memberships, PM sees all
+GET     /api/projects/:id                  any role; same scoping
+POST    /api/projects                      PM
+PATCH   /api/projects/:id                  PM; name, description
+DELETE  /api/projects/:id                  PM; soft delete
+POST    /api/projects/:id/members          PM; userId of an Internal Team or Client Guest account
+DELETE  /api/projects/:id/members/:userId  PM; soft delete, refused while they have unfinished tasks
+GET     /api/tasks                         any role; scoped and masked per role
+GET     /api/tasks/:id                     any role; scoped and masked per role
+POST    /api/tasks                         PM
+PATCH   /api/tasks/:id                     PM; title, description, assigneeId, isClientVisible, version
+PATCH   /api/tasks/:id/status              PM, Internal; status, version
+DELETE  /api/tasks/:id?version=<n>         PM; soft delete
+POST    /api/tasks/:id/dependencies        PM
+GET     /api/tasks/:id/audit-logs          PM, Internal (project members); follows the list query contract
+POST    /api/tasks/:id/comments            PM, Internal
+POST    /api/tasks/:id/attachments         PM, Internal; fileName and an http(s) fileUrl
 ```
 
 ## Testing
@@ -181,6 +184,7 @@ bun run test
 
 `bun test` runs the suites next to the code as `src/**/*.test.ts`. The service suites write to the database that `DATABASE_URL` points to (Bun loads `.env`), so apply the migrations first. Their fixtures use random `svc-` and `auth-` prefixes and are deleted in `afterAll`, and the seeded data is not touched. `src/http.test.ts` goes through the real Hono app and does not write data. The suites cover:
 
+- `src/services/project.service.test.ts`: project edits, adding and removing members (access before and after, the unfinished-tasks rule, reactivation) and member validation on create.
 - `src/services/task-policy.test.ts`: `assertTransition` per role and `assertAssignable`, as pure functions.
 - `src/services/task.service.test.ts`: `computeBlocked`; status changes against a real database (department and assignee rules, a PM cannot complete, blocked tasks, a stale version conflicts); masking of internal-only prerequisites for Client Guests; cycle rejection; the list allow-list (a Client Guest cannot probe `department`, an Internal Team member cannot reach another project through a relation filter); assignee and dependency validation on create and update.
 - `src/lib/query-filter.test.ts`: the documented query examples, and rejection of unlisted fields, relations, operators and malformed input.
@@ -229,7 +233,7 @@ The API runs on Vercel (Hobby plan) with the Bun runtime and the `sin1` region, 
 - There is no daily standup summary endpoint.
 - A token is not checked against the database after it is signed. It stays valid until it expires (`JWT_EXPIRES_IN`, `1d` by default), including after logout or after the user is soft-deleted, and `User.isActive` is not read anywhere.
 - The audit trail is append-only by convention. Nothing in the schema or the migrations, such as a trigger, blocks `UPDATE` or `DELETE` on `audit_logs`.
-- There are no endpoints to edit a project or its members, remove a dependency, or edit or delete a comment or an attachment.
+- There are no endpoints to remove a dependency, or to edit or delete a comment or an attachment.
 - There is no rate limiting.
 - Biome runs with `preset: none`, so `bun run lint` applies no lint rules.
 
